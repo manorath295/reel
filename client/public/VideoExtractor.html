@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-width=1.0">
+    <title>ISL Sign Kit - 3D Video Extractor</title>
+    <!-- Mediapipe Scripts from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f8f9fa; color: #333; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1 { color: #6f42c1; font-size: 24px; margin-top: 0; }
+        .btn { background: #6f42c1; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .btn:disabled { background: #ccc; cursor: not-allowed; }
+        #log { margin-top: 20px; padding: 10px; background: #e9ecef; border-radius: 4px; font-family: monospace; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
+        video, canvas { max-width: 100%; border-radius: 8px; margin-top: 10px; background: #000; }
+        .container { display: flex; gap: 20px; }
+        .col { flex: 1; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h1><span style="font-size: 1.2em">🤖</span> ISL 3D Motion Extractor (Option B)</h1>
+    <p>Upload your reference video (e.g. <b>Daily_Everyday.mp4</b>). This runs entirely in your browser using Google Mediapipe to extract true 3D Depth coordinates required for Kalidokit.</p>
+
+    <div style="margin-bottom: 15px;">
+        <label><b>1. Select Video:</b></label><br/>
+        <input type="file" id="videoUpload" accept="video/mp4,video/webm" style="margin-top: 5px;">
+    </div>
+    
+    <div style="margin-bottom: 15px;">
+        <label><b>2. Target JSON Name (Optional):</b></label><br/>
+        <input type="text" id="fileName" placeholder="e.g. DAILY_EVERYDAY_motion.json" style="width: 100%; padding: 8px; margin-top: 5px; box-sizing: border-box;">
+        <small style="color: #666;">If left blank, it uses the video filename.</small>
+    </div>
+
+    <button id="startBtn" class="btn" disabled>▶ Start Extraction</button>
+
+    <div class="container" style="margin-top: 20px;">
+        <div class="col">
+            <video id="inputVideo" playsinline controls></video>
+        </div>
+        <div class="col" style="display:none;">
+            <!-- Hidden canvas for tracking (not strictly needed for UI, but good for debugging if we want to add drawing) -->
+            <canvas id="outputCanvas"></canvas>
+        </div>
+    </div>
+
+    <div id="log">Waiting for file...</div>
+</div>
+
+<script>
+    const videoUpload = document.getElementById('videoUpload');
+    const inputVideo = document.getElementById('inputVideo');
+    const startBtn = document.getElementById('startBtn');
+    const logDiv = document.getElementById('log');
+    const fileNameInput = document.getElementById('fileName');
+
+    let framesData = [];
+    let frameIndex = 0;
+    let isProcessing = false;
+    // Approximating FPS since JS can't read native video FPS perfectly
+    const FPS = 25; 
+
+    function log(msg) {
+        console.log(msg);
+        logDiv.innerHTML = msg + '\n' + logDiv.innerHTML;
+    }
+
+    videoUpload.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const url = URL.createObjectURL(file);
+        inputVideo.src = url;
+        
+        // Auto fill filename
+        let baseName = file.name.split('.')[0].toUpperCase();
+        fileNameInput.value = `${baseName}_motion.json`;
+
+        startBtn.disabled = false;
+        log('Video loaded. Click Start when ready.');
+    });
+
+    // 1. Initialize Mediapipe Holistic Model
+    const holistic = new Holistic({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
+    }});
+
+    holistic.setOptions({
+        modelComplexity: 2,           // 2 = best accuracy for hand detection
+        smoothLandmarks: true,
+        enableSegmentation: false,
+        smoothSegmentation: false,
+        refineFaceLandmarks: false,
+        minDetectionConfidence: 0.3,  // lowered from 0.5 → catches hands in dark videos
+        minTrackingConfidence: 0.3
+    });
+
+    holistic.onResults((results) => {
+        if (!isProcessing) return;
+
+        let frameData = {
+            frame: frameIndex,
+            pose: [],
+            pose3d: [], 
+            left_hand: [],
+            right_hand: []
+        };
+        
+        // Mediapipe returns normalized X/Y (0-1) and Z proportional to image width.
+        // We need to scale Z so it matches the 3D space Kalidokit expects.
+        const width = inputVideo.videoWidth || 640;
+        const height = inputVideo.videoHeight || 480;
+
+        // 2D Screen Space
+        if (results.poseLandmarks) {
+            results.poseLandmarks.forEach((lm, idx) => {
+                frameData.pose.push({ id: idx, x: lm.x, y: lm.y, z: lm.z, visibility: lm.visibility });
+            });
+        }
+
+        // 3D Metric Space
+        if (results.za) { 
+            let worldLms = results.za;
+            worldLms.forEach((lm, idx) => {
+                // IMPORTANT: We must scale Z by width so it isn't flat!
+                frameData.pose3d.push({ id: idx, x: lm.x, y: lm.y, z: lm.z * width, visibility: lm.visibility });
+            });
+        } else if (results.poseWorldLandmarks) {
+             results.poseWorldLandmarks.forEach((lm, idx) => {
+                frameData.pose3d.push({ id: idx, x: lm.x, y: lm.y, z: lm.z * width, visibility: lm.visibility });
+            });
+        }
+
+        // Hands
+        if (results.leftHandLandmarks) {
+            results.leftHandLandmarks.forEach((lm, idx) => {
+                frameData.left_hand.push({ id: idx, x: lm.x, y: lm.y, z: lm.z, visibility: 1.0 });
+            });
+        }
+        if (results.rightHandLandmarks) {
+            results.rightHandLandmarks.forEach((lm, idx) => {
+                frameData.right_hand.push({ id: idx, x: lm.x, y: lm.y, z: lm.z, visibility: 1.0 });
+            });
+        }
+
+        framesData.push(frameData);
+        frameIndex++;
+
+        if (frameIndex % 10 === 0) {
+            log(`Processed ${frameIndex} frames...`);
+        }
+    });
+
+    startBtn.addEventListener('click', async () => {
+        if (!inputVideo.src) return;
+        
+        framesData = [];
+        frameIndex = 0;
+        isProcessing = true;
+        startBtn.disabled = true;
+        videoUpload.disabled = true;
+
+        log('Waking up Mediapipe (this takes a few seconds)...');
+
+        // Force video to play
+        inputVideo.currentTime = 0;
+        inputVideo.muted = true; // Chrome requirement for auto-play
+        await inputVideo.play();
+        
+        log('Started extraction...');
+
+        // Loop using requestAnimationFrame to capture video frames
+        async function captureFrame() {
+            if (inputVideo.paused || inputVideo.ended) {
+                finishExtraction();
+                return;
+            }
+            // Send current video frame to Mediapipe
+            await holistic.send({image: inputVideo});
+            requestAnimationFrame(captureFrame);
+        }
+
+        captureFrame();
+    });
+
+    function finishExtraction() {
+        isProcessing = false;
+        log(`✅ Finished! Extracted ${framesData.length} frames.`);
+
+        const outData = {
+            metadata: {
+                source: videoUpload.files[0].name,
+                fps: FPS,
+                total_frames: framesData.length
+            },
+            frames: framesData
+        };
+
+        const jsonString = JSON.stringify(outData);
+        const blob = new Blob([jsonString], {type: "application/json"});
+        const url  = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        let fName = fileNameInput.value.trim() || 'motion.json';
+        if (!fName.endsWith('.json')) fName += '.json';
+        
+        a.href = url;
+        a.download = fName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        log(`🎉 Download triggered for ${fName}.`);
+        log(`👉 Move this file to your 'D:\\Sign-Kit-An-Avatar-based-ISL-Toolkit\\client\\public' directory!`);
+        
+        startBtn.disabled = false;
+        videoUpload.disabled = false;
+        inputVideo.currentTime = 0;
+    }
+</script>
+
+</body>
+</html>

@@ -1,0 +1,59 @@
+# ── Environment ──
+.env
+.venv
+venv/
+env/
+ENV/
+
+# ── Python / Server ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+
+# ── Node / React Client ──
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+client/build/
+.pnp
+.pnp.js
+
+# ── OS Generated ──
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ── IDEs / Editors ──
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Video/Media/Data (Optional but recommended for ISL Kit) ──
+client/public/*.mp4
+client/public/*.mov
+server/*.mp4
+server/*.mov

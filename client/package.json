@@ -1,0 +1,32 @@
+{
+  "name": "client",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@pixiv/three-vrm": "^3.5.1",
+    "@react-three/drei": "*",
+    "@react-three/fiber": "*",
+    "@remotion/player": "*",
+    "axios": "*",
+    "bootstrap": "*",
+    "font-awesome": "*",
+    "kalidokit": "*",
+    "react": "*",
+    "react-bootstrap": "*",
+    "react-dom": "*",
+    "react-router-dom": "*",
+    "react-speech-recognition": "*",
+    "regenerator-runtime": "*",
+    "remotion": "*",
+    "three": "*"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "*",
+    "vite": "*"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  }
+}
