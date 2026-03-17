@@ -91,8 +91,8 @@ function VRMAvatarScene({ animRef, setVrmError }) {
     // ── JSON Kalidokit animation playback ──────────────────────────────────
     if (ref.jsonFrames && ref.currentFrame < ref.jsonFrames.length) {
       const now = performance.now();
-      // 5x slow for demo / judge presentation
-      const frameDuration = (1000 / (ref.fps || 25)) * (0.1 / Math.max(ref.speed || 0.1, 0.01)) * 5.0;
+      // Frame duration in ms: base fps from video, scaled by speed slider (lower = faster)
+      const frameDuration = (1000 / (ref.fps || 25)) * (0.1 / Math.max(ref.speed || 0.1, 0.01));
 
       if (now - (ref.lastFrameTime || 0) >= frameDuration) {
         const frameData = ref.jsonFrames[ref.currentFrame];
@@ -103,123 +103,178 @@ function VRMAvatarScene({ animRef, setVrmError }) {
           if ((lm.visibility || 1) > 0.15) P[lm.id] = { x: lm.x, y: lm.y };
         });
 
-        // ── Draw OpenCV-style 2D skeleton on debug canvas ────────────────────
+        // ── Draw large human stick figure on main canvas ─────────────────────
         const debugCanvas = document.getElementById('debug_canvas');
         if (debugCanvas) {
-          // Resize to CSS layout
+          // Sync canvas resolution to CSS size
           if (debugCanvas.width !== debugCanvas.clientWidth) debugCanvas.width = debugCanvas.clientWidth;
           if (debugCanvas.height !== debugCanvas.clientHeight) debugCanvas.height = debugCanvas.clientHeight;
+          const W = debugCanvas.width;
+          const H = debugCanvas.height;
           const ctx = debugCanvas.getContext('2d');
-          ctx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
-          
-          const drawLine = (p1, p2) => {
-            if (!p1 || !p2) return;
+          ctx.clearRect(0, 0, W, H);
+
+          // Helper: convert normalized [0-1] pose coords → canvas px
+          const px = (lm) => lm ? { x: lm.x * W, y: lm.y * H } : null;
+
+          // ── Draw a thick glowing bone line ──
+          const bone = (a, b, color = '#4ade80', width = 8) => {
+            const pa = px(a), pb = px(b);
+            if (!pa || !pb) return;
+            ctx.save();
+            ctx.shadowBlur = 12;
+            ctx.shadowColor = color;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.lineCap = 'round';
             ctx.beginPath();
-            ctx.moveTo(p1.x * debugCanvas.width, p1.y * debugCanvas.height);
-            ctx.lineTo(p2.x * debugCanvas.width, p2.y * debugCanvas.height);
+            ctx.moveTo(pa.x, pa.y);
+            ctx.lineTo(pb.x, pb.y);
             ctx.stroke();
+            ctx.restore();
           };
-          // Draw skeleton bone lines
-          ctx.strokeStyle = '#00ff00';
-          ctx.lineWidth = 3;
-          drawLine(P[11], P[13]); drawLine(P[13], P[15]); // L Arm
-          drawLine(P[12], P[14]); drawLine(P[14], P[16]); // R Arm
-          drawLine(P[11], P[12]); // Shoulders
-          drawLine(P[23], P[24]); // Hips
-          drawLine(P[11], P[23]); drawLine(P[12], P[24]); // Torso sides
+
+          // ── Draw a joint dot ──
+          const joint = (lm, r = 7, fill = '#fff', glow = '#6ee7b7') => {
+            const p = px(lm);
+            if (!p) return;
+            ctx.save();
+            ctx.shadowBlur = 14;
+            ctx.shadowColor = glow;
+            ctx.fillStyle = fill;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          };
+
+          // Body: torso
+          bone(P[11], P[12], '#60a5fa', 10); // Shoulders
+          bone(P[23], P[24], '#60a5fa', 10); // Hips
+          bone(P[11], P[23], '#60a5fa', 8);  // Left torso
+          bone(P[12], P[24], '#60a5fa', 8);  // Right torso
+
+          // Arms
+          bone(P[11], P[13], '#4ade80', 9);  // L upper arm
+          bone(P[13], P[15], '#4ade80', 7);  // L lower arm
+          bone(P[12], P[14], '#4ade80', 9);  // R upper arm
+          bone(P[14], P[16], '#4ade80', 7);  // R lower arm
+
           // Neck
           const midShoulder = (P[11] && P[12]) ? { x: (P[11].x + P[12].x) / 2, y: (P[11].y + P[12].y) / 2 } : null;
-          if (midShoulder && P[0]) drawLine(midShoulder, P[0]);
+          if (midShoulder && P[0]) bone(midShoulder, P[0], '#f9a8d4', 6);
 
-          // ── Draw ANIME FACE at head (landmark 0 = nose tip) ──
+          // Legs
+          bone(P[23], P[25], '#a78bfa', 9);  // L upper leg
+          bone(P[25], P[27], '#a78bfa', 7);  // L lower leg
+          bone(P[24], P[26], '#a78bfa', 9);  // R upper leg
+          bone(P[26], P[28], '#a78bfa', 7);  // R lower leg
+
+          // Joint dots
+          [11,12,13,14,15,16,23,24,25,26,27,28].forEach(i => joint(P[i], 7, '#fff', '#6ee7b7'));
+          joint(P[15], 9, '#4ade80', '#4ade80'); // L wrist accent
+          joint(P[16], 9, '#4ade80', '#4ade80'); // R wrist accent
+
+          // ── Head circle ──
           if (P[0]) {
-            const fx = P[0].x * debugCanvas.width;
-            const fy = P[0].y * debugCanvas.height;
-            const headR = 28;
-            // Face circle
+            const hp = px(P[0]);
+            // Calculate head size relative to shoulder width
+            const shoulderW = (P[11] && P[12]) ? Math.abs(P[12].x - P[11].x) * W : 60;
+            const headR = Math.max(shoulderW * 0.35, 28);
+
             ctx.save();
-            ctx.fillStyle = '#ffd9b0';   // skin tone
-            ctx.strokeStyle = '#333';
-            ctx.lineWidth = 2;
-            ctx.beginPath(); ctx.arc(fx, fy - headR * 0.6, headR, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+            ctx.shadowBlur = 20;
+            ctx.shadowColor = '#fbbf24';
+            // Head fill
+            ctx.fillStyle = '#fde68a';
+            ctx.strokeStyle = '#fbbf24';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.arc(hp.x, hp.y - headR * 0.5, headR, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            const hy = hp.y - headR * 0.5;
             // Eyes
-            ctx.fillStyle = '#222';
-            ctx.beginPath(); ctx.arc(fx - 9, fy - headR * 0.7, 4, 0, Math.PI * 2); ctx.fill(); // L eye
-            ctx.beginPath(); ctx.arc(fx + 9, fy - headR * 0.7, 4, 0, Math.PI * 2); ctx.fill(); // R eye
-            // Eye shine
-            ctx.fillStyle = '#fff';
-            ctx.beginPath(); ctx.arc(fx - 7, fy - headR * 0.78, 1.5, 0, Math.PI * 2); ctx.fill();
-            ctx.beginPath(); ctx.arc(fx + 11, fy - headR * 0.78, 1.5, 0, Math.PI * 2); ctx.fill();
-            // Blush
-            ctx.fillStyle = 'rgba(255,120,120,0.35)';
-            ctx.beginPath(); ctx.ellipse(fx - 13, fy - headR * 0.55, 7, 4, 0, 0, Math.PI * 2); ctx.fill();
-            ctx.beginPath(); ctx.ellipse(fx + 13, fy - headR * 0.55, 7, 4, 0, 0, Math.PI * 2); ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#1e293b';
+            ctx.beginPath(); ctx.arc(hp.x - headR * 0.3, hy - headR * 0.15, headR * 0.1, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(hp.x + headR * 0.3, hy - headR * 0.15, headR * 0.1, 0, Math.PI * 2); ctx.fill();
             // Smile
-            ctx.strokeStyle = '#c05050'; ctx.lineWidth = 1.5;
-            ctx.beginPath(); ctx.arc(fx, fy - headR * 0.45, 6, 0.2, Math.PI - 0.2); ctx.stroke();
+            ctx.strokeStyle = '#92400e';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(hp.x, hy + headR * 0.05, headR * 0.3, 0.2, Math.PI - 0.2);
+            ctx.stroke();
             ctx.restore();
           }
 
-          // ── Skull icons at major joints ──
-          ctx.font = '18px serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          [11, 12, 13, 14, 15, 16, 23, 24].forEach(i => {
-            const p = P[i];
-            if (p) ctx.fillText('☠', p.x * debugCanvas.width, p.y * debugCanvas.height);
-          });
-
-          // ── Proper finger bone lines ──
-          const FINGER_COLORS = ['#ff6b6b', '#ffd93d', '#6bcb77', '#4d96ff', '#c77dff'];
+          // ── Finger bones ──
+          const FINGER_COLORS = ['#f87171', '#fbbf24', '#4ade80', '#60a5fa', '#c084fc'];
           const FINGER_CONNECTIONS = [
-            [0,1],[1,2],[2,3],[3,4],       // Thumb
-            [0,5],[5,6],[6,7],[7,8],       // Index
-            [0,9],[9,10],[10,11],[11,12],  // Middle
-            [0,13],[13,14],[14,15],[15,16],// Ring
-            [0,17],[17,18],[18,19],[19,20] // Pinky
+            [0,1],[1,2],[2,3],[3,4],
+            [0,5],[5,6],[6,7],[7,8],
+            [0,9],[9,10],[10,11],[11,12],
+            [0,13],[13,14],[14,15],[15,16],
+            [0,17],[17,18],[18,19],[19,20]
           ];
-          const FINGER_COLORS_BY_CONN = [
-            0,0,0,0, 1,1,1,1, 2,2,2,2, 3,3,3,3, 4,4,4,4
-          ];
-          const drawFingerLines = (hand, label) => {
-            if (!hand || hand.length < 21) return;
+          const FCOLOR_IDX = [0,0,0,0, 1,1,1,1, 2,2,2,2, 3,3,3,3, 4,4,4,4];
+
+          const drawHand = (hand) => {
+            if (!hand || hand.length < 5) return;
             const lms = Array(21).fill(null);
             hand.forEach(p => { if (p && p.id != null) lms[p.id] = p; });
-            // draw lines
             FINGER_CONNECTIONS.forEach(([a, b], ci) => {
-              const pa = lms[a], pb = lms[b];
+              const pa = lms[a] ? px(lms[a]) : null;
+              const pb = lms[b] ? px(lms[b]) : null;
               if (!pa || !pb) return;
-              ctx.strokeStyle = FINGER_COLORS[FINGER_COLORS_BY_CONN[ci]];
-              ctx.lineWidth = 2;
-              ctx.beginPath();
-              ctx.moveTo(pa.x * debugCanvas.width, pa.y * debugCanvas.height);
-              ctx.lineTo(pb.x * debugCanvas.width, pb.y * debugCanvas.height);
-              ctx.stroke();
+              const clr = FINGER_COLORS[FCOLOR_IDX[ci]];
+              ctx.save();
+              ctx.shadowBlur = 8; ctx.shadowColor = clr;
+              ctx.strokeStyle = clr; ctx.lineWidth = 4; ctx.lineCap = 'round';
+              ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+              ctx.restore();
             });
-            // draw joint dots
-            ctx.fillStyle = '#fff';
             lms.forEach(p => {
               if (!p) return;
-              ctx.beginPath();
-              ctx.arc(p.x * debugCanvas.width, p.y * debugCanvas.height, 3, 0, Math.PI * 2);
-              ctx.fill();
-              ctx.stroke();
+              const pp = px(p);
+              ctx.fillStyle = '#fff';
+              ctx.beginPath(); ctx.arc(pp.x, pp.y, 4, 0, Math.PI * 2); ctx.fill();
             });
           };
-          drawFingerLines(frameData.left_hand, 'L');
-          drawFingerLines(frameData.right_hand, 'R');
+          drawHand(frameData.left_hand);
+          drawHand(frameData.right_hand);
         }
 
         // ── KALIDOKIT POSE SOLVE ────────────────────────────────────────────
         // Build properly-indexed [0..32] arrays (Kalidokit NEEDS id-order)
         const poseRaw3d = (frameData.pose3d || frameData.pose || []);
         const poseRaw2d = (frameData.pose || []);
-        const p3d = Array(33).fill({ x: 0, y: 0, z: 0, visibility: 0 });
-        const p2d = Array(33).fill({ x: 0, y: 0, z: 0, visibility: 0 });
-        poseRaw3d.forEach(lm => { if (lm.id != null) p3d[lm.id] = { x: lm.x, y: lm.y, z: lm.z, visibility: lm.visibility || 1 }; });
-        poseRaw2d.forEach(lm => { if (lm.id != null) p2d[lm.id] = { x: lm.x, y: lm.y, z: lm.z, visibility: lm.visibility || 1 }; });
+        
+        // Sometimes JSON is sparse arrays with ID field, sometimes it's direct array with nulls
+        const p3d = Array(33).fill(null);
+        const p2d = Array(33).fill(null);
+        
+        poseRaw3d.forEach((lm, i) => { 
+            if (!lm) return;
+            const id = lm.id !== undefined ? lm.id : i;
+            if (id < 33) p3d[id] = { x: lm.x, y: lm.y, z: lm.z, visibility: lm.visibility || 1 }; 
+        });
+        
+        poseRaw2d.forEach((lm, i) => { 
+            if (!lm) return;
+            const id = lm.id !== undefined ? lm.id : i;
+            if (id < 33) p2d[id] = { x: lm.x, y: lm.y, z: lm.z, visibility: lm.visibility || 1 }; 
+        });
 
-        if (poseRaw3d.length >= 20) {
+        // Kalidokit needs p3d to be fully populated with at least *something* if it solves,
+        // so we fill nulls with 0s to prevent crash, though visibility 0 ignores them.
+        for(let i=0; i<33; i++) {
+            if(!p3d[i]) p3d[i] = {x:0, y:0, z:0, visibility:0};
+            if(!p2d[i]) p2d[i] = {x:0, y:0, z:0, visibility:0};
+        }
+
+        if (poseRaw3d.length >= 10) {
           let poseRig;
           try { poseRig = KalidokitPose.solve(p3d, p2d, { runtime: 'mediapipe', video: null }); } catch(e) { console.warn('pose solve err', e); }
           if (poseRig) {
@@ -236,8 +291,15 @@ function VRMAvatarScene({ animRef, setVrmError }) {
 
         // ── KALIDOKIT HAND SOLVE ──────────────────────────────────────────────
         const solveHand = (handData, side) => {
-          if (!handData || handData.length < 21) return;
-          const lms = [...handData].sort((a, b) => a.id - b.id).map(lm => ({ x: lm.x, y: lm.y, z: lm.z }));
+          if (!handData || handData.length < 5) return;
+          
+          const lms = Array(21).fill({x:0, y:0, z:0});
+          handData.forEach((lm, i) => {
+              if (!lm) return;
+              const id = lm.id !== undefined ? lm.id : i;
+              if (id < 21) lms[id] = { x: lm.x, y: lm.y, z: lm.z };
+          });
+          
           let rig; try { rig = KalidokitHand.solve(lms, side); } catch { return; }
           if (!rig) return;
           const S = side;
@@ -413,24 +475,67 @@ function Convert() {
     playJSONFile('/AGRICULTURE_motion.json').then(() => setStatusMsg('✅ Done'));
   }, [playJSONFile]);
 
-  // ── Hardcoded Sign Kit animated text ──────────────────────────────────────
-  const sign = useCallback((inputRef) => {
-    const str = (inputRef.current?.value || '').toUpperCase();
-    const strWords = str.split(' ');
+  // ── Sign Classic: check MongoDB first, then fallback to hardcoded ──────────
+  const sign = useCallback(async (inputRef) => {
+    const str = (inputRef.current?.value || '').toUpperCase().trim();
+    if (!str) return;
+    const strWords = str.split(/\s+/);
     setText('');
     animRef.current.animations = [];
+    setIsProcessing(true);
+    setStatusMsg('🔍 Checking MongoDB for signs…');
+
     for (const word of strWords) {
-      if (words[word]) {
-        animRef.current.animations.push(['add-text', word + ' ']);
-        words[word](animRef.current);
-      } else {
-        for (const [i, ch] of word.split('').entries()) {
-          animRef.current.animations.push(['add-text', i === word.length - 1 ? ch + ' ' : ch]);
-          if (alphabets[ch]) alphabets[ch](animRef.current);
+      // Try MongoDB first via /motion/:word
+      let foundInDB = false;
+      try {
+        const res = await fetch(`http://localhost:8000/motion/${encodeURIComponent(word)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.frames && data.frames.length > 0) {
+            foundInDB = true;
+            setStatusMsg(`▶ Playing from DB: ${word}`);
+            setText(prev => prev + `[${word}] `);
+            await new Promise(resolve => {
+              animRef.current.currentFrame = 0;
+              animRef.current.jsonFrames = data.frames;
+              animRef.current.fps = data.metadata?.fps || 25;
+              animRef.current.lastFrameTime = performance.now();
+              animRef.current.onJsonFinish = resolve;
+              const pBar = document.getElementById('aiProgressBar');
+              const pTxt = document.getElementById('aiProgressText');
+              if (pBar) pBar.style.width = '0%';
+              if (pTxt) pTxt.innerText = `Playing ${word}…`;
+            });
+            await new Promise(r => setTimeout(r, pause));
+          }
+        }
+      } catch (e) { /* server not reachable, fallback */ }
+
+      if (!foundInDB) {
+        // Fallback to hardcoded word animations
+        if (words[word]) {
+          setStatusMsg(`▶ Signing (hardcoded): ${word}`);
+          setText(prev => prev + `[${word}] `);
+          animRef.current.animations.push(['add-text', word + ' ']);
+          words[word](animRef.current);
+        } else {
+          // Fingerspell using JSON files from /public/alphabets/
+          setStatusMsg(`✏️ Finger-spelling: ${word}`);
+          for (const ch of word.split('')) {
+            const upper = ch.toUpperCase();
+            if (upper >= 'A' && upper <= 'Z') {
+              setText(prev => prev + ch);
+              await playJSONFile(`/alphabets/${upper}.json`);
+              await new Promise(r => setTimeout(r, 120)); // short pause between letters
+            }
+          }
         }
       }
     }
-  }, []);
+    setIsProcessing(false);
+    setStatusMsg('✅ Done signing!');
+  }, [pause]);
 
   // ── GenAI Audio Upload ─────────────────────────────────────────────────────
   const videoReelInputRef = useRef(null);
@@ -645,42 +750,45 @@ function Convert() {
           </div>
         </div>
 
-        {/* ── Centre (3D Canvas + Progress Bar) ────────────────────────── */}
-        <div className='col-md-7 p-0' style={{ position: 'relative', backgroundColor: '#ffffff' }}>
-          {vrmError && (
-            <div style={{ position: 'absolute', top: '40%', left: '50%', transform: 'translate(-50%, -50%)', background: 'red', color: 'white', padding: '20px', borderRadius: '10px', zIndex: 100, maxWidth: '80%' }}>
-              <h5>VRM Avatar Load Error</h5>
-              <p>{vrmError}</p>
-              <p style={{fontSize: '12px'}}>The file `AvatarSample_B.vrm` may be corrupt or blocked by Vite.</p>
-            </div>
-          )}
-          <canvas id="debug_canvas" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: 'calc(100vh - 90px)', pointerEvents: 'none', zIndex: 10 }} />
-          <Canvas
-            style={{ width: '100%', height: 'calc(100vh - 90px)' }}
-            camera={{ position: [0, 0.9, 2.8], fov: 45 }}
-            gl={{ preserveDrawingBuffer: true, powerPreference: 'high-performance' }}
-          >
-            <ambientLight intensity={3} />
-            <spotLight position={[0, 5, 5]} intensity={500} />
-            <Suspense fallback={null}>
-              <VRMAvatarScene animRef={animRef} setVrmError={setVrmError} />
-            </Suspense>
-            <OrbitControls enablePan={true} minDistance={1} maxDistance={5} target={[0, 0.9, 0]} />
-          </Canvas>
+        {/* ── Centre (Stick Figure Canvas + Progress Bar) ──────────────── */}
+        <div className='col-md-7 p-0' style={{ position: 'relative', backgroundColor: '#111827', display: 'flex', flexDirection: 'column' }}>
+          {/* Main stick figure canvas — full height */}
+          <canvas
+            id="debug_canvas"
+            style={{
+              width: '100%',
+              height: 'calc(100vh - 90px)',
+              background: 'linear-gradient(180deg, #0f172a 0%, #1e293b 100%)'
+            }}
+          />
 
-          {/* Progress Bar (under canvas) */}
-          <div className='p-2 bg-light shadow-sm'>
+          {/* Progress Bar */}
+          <div className='p-2' style={{ background: '#1e293b', borderTop: '1px solid #334155' }}>
             <div className='d-flex justify-content-between mb-1'>
-              <small id='aiProgressText' className='text-secondary fw-bold'>Ready</small>
+              <small id='aiProgressText' className='fw-bold' style={{ color: '#94a3b8' }}>Ready</small>
             </div>
-            <div className='progress' style={{ height: '10px', borderRadius: '8px' }}>
+            <div className='progress' style={{ height: '8px', borderRadius: '8px', background: '#334155' }}>
               <div
                 id='aiProgressBar'
-                className='progress-bar progress-bar-striped progress-bar-animated bg-success'
+                className='progress-bar progress-bar-striped progress-bar-animated'
                 role='progressbar'
-                style={{ width: '0%', transition: 'width 0.1s linear' }}
+                style={{ width: '0%', transition: 'width 0.1s linear', background: 'linear-gradient(90deg, #6366f1, #8b5cf6)' }}
               />
             </div>
+          </div>
+
+          {/* Hidden 3D canvas kept for Kalidokit bone solve — invisible */}
+          <div style={{ width: 0, height: 0, overflow: 'hidden', position: 'absolute' }}>
+            <Canvas
+              style={{ width: '1px', height: '1px' }}
+              camera={{ position: [0, 0.9, 2.8], fov: 45 }}
+              gl={{ preserveDrawingBuffer: false, powerPreference: 'low-power' }}
+            >
+              <ambientLight intensity={1} />
+              <Suspense fallback={null}>
+                <VRMAvatarScene animRef={animRef} setVrmError={setVrmError} />
+              </Suspense>
+            </Canvas>
           </div>
         </div>
 

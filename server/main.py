@@ -21,6 +21,20 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # The folder where all *_motion.json files live (Vite serves from /client/public/)
 PUBLIC_DIR = Path(__file__).parent.parent / "client" / "public"
 
+# ── MongoDB Connection ────────────────────────────────────────────────────────
+import urllib.parse
+from pymongo import MongoClient
+try:
+    password = urllib.parse.quote_plus("56VZ4jyL7rO01vhH")
+    MONGO_URL = f"mongodb+srv://learn4833_db_user:{password}@cluster0.zcnodn7.mongodb.net/?appName=Cluster0"
+    mongo_client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+    db = mongo_client["sign_kit_db"]
+    motions_collection = db["motions"]
+    print("✅ Connected to MongoDB Atlas")
+except Exception as e:
+    print(f"⚠️  Failed to connect to MongoDB: {e}")
+    motions_collection = None
+
 # ── Gemini system prompt ──────────────────────────────────────────────────────
 ISL_SYSTEM_PROMPT = """
 You are an expert Indian Sign Language (ISL) linguist.
@@ -66,10 +80,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+def get_db_motion_words() -> set[str]:
+    """Returns a set of all words currently stored in MongoDB."""
+    if motions_collection is None:
+        return set()
+    try:
+        # Fetch just the 'word' field from all documents
+        docs = motions_collection.find({}, {"word": 1, "_id": 0})
+        return {doc["word"] for doc in docs}
+    except Exception as e:
+        print(f"⚠️  Failed to fetch words from MongoDB: {e}")
+        return set()
 
 def get_available_motion_files() -> dict[str, str]:
-    """Returns a dict mapping WORD → /public/XXX_motion.json URL path."""
+    """Returns a dict mapping WORD → /public/XXX_motion.json URL path (Local)."""
     mapping: dict[str, str] = {}
     for path in PUBLIC_DIR.glob("*_motion.json"):
         # e.g. "agriculture_motion.json" → key "AGRICULTURE"
@@ -91,7 +115,9 @@ def build_animation_sequence(gloss_words: list[str]) -> list[dict]:
     First tries compound combinations (e.g. SAVING+ACCOUNT → SAVING_ACCOUNT_motion.json),
     then falls back to letter-by-letter fingerspelling.
     """
-    available = get_available_motion_files()
+    available_local = get_available_motion_files()
+    available_db = get_db_motion_words()
+    
     sequence: list[dict] = []
     i = 0
     while i < len(gloss_words):
@@ -101,16 +127,25 @@ def build_animation_sequence(gloss_words: list[str]) -> list[dict]:
         matched_compound = False
         if i + 1 < len(gloss_words):
             compound = key + "_" + gloss_words[i+1].upper().strip()
-            if compound in available:
-                sequence.append({"word": compound, "file": available[compound], "type": "sign"})
-                print(f"   ✅ Compound match: '{compound}' → {available[compound]}")
+            
+            if compound in available_db:
+                sequence.append({"word": compound, "file": f"http://localhost:8000/motion/{compound}", "type": "sign"})
+                print(f"   ☁️  Compound match (DB): '{compound}'")
+                i += 2
+                matched_compound = True
+            elif compound in available_local:
+                sequence.append({"word": compound, "file": available_local[compound], "type": "sign"})
+                print(f"   ✅ Compound match (Local): '{compound}' → {available_local[compound]}")
                 i += 2
                 matched_compound = True
 
         if not matched_compound:
-            if key in available:
-                sequence.append({"word": key, "file": available[key], "type": "sign"})
-                print(f"   ✅ Word match: '{key}' → {available[key]}")
+            if key in available_db:
+                sequence.append({"word": key, "file": f"http://localhost:8000/motion/{key}", "type": "sign"})
+                print(f"   ☁️  Word match (DB): '{key}'")
+            elif key in available_local:
+                sequence.append({"word": key, "file": available_local[key], "type": "sign"})
+                print(f"   ✅ Word match (Local): '{key}' → {available_local[key]}")
             else:
                 # Fingerspell the word character by character
                 print(f"   ✏️  No match for '{key}', finger-spelling...")
@@ -125,11 +160,24 @@ def build_animation_sequence(gloss_words: list[str]) -> list[dict]:
     return sequence
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
-
 @app.get("/")
 async def root():
     return {"status": "ISL Sign Kit API is running", "version": "1.0.0"}
+
+
+@app.get("/motion/{word}")
+async def get_motion_data(word: str):
+    """Fetch motion JSON data straight from MongoDB by word name."""
+    if motions_collection is None:
+        raise HTTPException(status_code=500, detail="Database not connected.")
+    
+    word = word.upper().strip()
+    doc = motions_collection.find_one({"word": word}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Motion data for '{word}' not found in DB.")
+    
+    # Return the dictionary document exactly as Vite would serve the JSON file
+    return doc
 
 
 @app.get("/available-animations")
@@ -236,7 +284,18 @@ async def text_to_sign(payload: dict):
     if gemini_model:
         try:
             print("STEP 1 ▶️  Sending to Gemini...")
-            response = gemini_model.generate_content(text)
+            # Fetch available combinations
+            available_db = list(get_db_motion_words())
+            available_local = list(get_available_motion_files().keys())
+            all_available = ", ".join(available_db + available_local)
+
+            dynamic_prompt = (
+                f"Translate this text to ISL Gloss: '{text}'.\n"
+                f"HINT: We have exact animations for these words: [{all_available}].\n"
+                f"If the text contains variations (like 'allergy' vs 'allergies'), you MUST use the exact word from the hint list if available."
+            )
+
+            response = gemini_model.generate_content(dynamic_prompt)
             raw = response.text.strip()
             print(f"STEP 2 🤖  Gemini raw response: {raw}")
             raw = re.sub(r"```(?:json)?", "", raw).strip().strip("```").strip()
