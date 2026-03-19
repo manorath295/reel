@@ -180,6 +180,7 @@ async def get_motion_data(word: str):
     return doc
 
 
+
 @app.get("/available-animations")
 async def available_animations():
     """List all available word animation JSON files."""
