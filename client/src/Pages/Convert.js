@@ -421,7 +421,15 @@ function Convert() {
       try {
         const res = await fetch(url);
         if (!res.ok) throw new Error(`Not found: ${url}`);
-        const data = await res.json();
+        let data = await res.json();
+
+        // If the document from MongoDB only contains a link to Supabase, fetch THAT link
+        if (data.animation_url) {
+          const sRes = await fetch(data.animation_url);
+          if (sRes.ok) {
+            data = await sRes.json();
+          }
+        }
 
         defaultPose(animRef.current);
 
@@ -491,7 +499,17 @@ function Convert() {
       try {
         const res = await fetch(`http://localhost:8000/motion/${encodeURIComponent(word)}`);
         if (res.ok) {
-          const data = await res.json();
+          let data = await res.json();
+          
+          // If the DB only has the Supabase link, fetch the full animation data from that link
+          if (data.animation_url && !data.frames) {
+             const sRes = await fetch(data.animation_url);
+             if (sRes.ok) {
+               const supData = await sRes.json();
+               data.frames = supData.frames;
+             }
+          }
+
           if (data.frames && data.frames.length > 0) {
             foundInDB = true;
             setStatusMsg(`▶ Playing from DB: ${word}`);
