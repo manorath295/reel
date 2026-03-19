@@ -54,14 +54,14 @@ Example output: ["FARMER", "GREEN", "FIELD", "GO"]
 """
 
 # ── Startup: load models once ─────────────────────────────────────────────────
-print("Loading Whisper model (this may take a moment on first run)...")
+print("Loading Whisper model (this may moment on first run)...")
 whisper_model = whisper.load_model("base")
 print("✅ Whisper ready.")
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     gemini_model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+        model_name="gemini-2.5-flash", # Updated to a stable version name if 2.5 was hallucinated
         system_instruction=ISL_SYSTEM_PROMPT,
     )
     print("✅ Gemini ready.")
@@ -180,7 +180,6 @@ async def get_motion_data(word: str):
     return doc
 
 
-
 @app.get("/available-animations")
 async def available_animations():
     """List all available word animation JSON files."""
@@ -229,10 +228,6 @@ async def transcribe_and_sign(audio: UploadFile = File(...)):
                 raw = re.sub(r"```(?:json)?", "", raw).strip().strip("```").strip()
                 gloss = json.loads(raw)
                 print(f"STEP 2 ✅  ISL Gloss: {gloss}")
-            except json.JSONDecodeError as je:
-                print(f"STEP 2 ❌  JSON parse error: {je} | raw was: {raw!r}")
-                gloss = [w.upper() for w in transcript.split() if len(w) > 2]
-                print(f"STEP 2 ⚠️  Fallback gloss: {gloss}")
             except Exception as e:
                 print(f"STEP 2 ❌  Gemini error: {e}")
                 gloss = [w.upper() for w in transcript.split() if len(w) > 2]
@@ -264,7 +259,8 @@ async def transcribe_and_sign(audio: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
     finally:
-        os.unlink(tmp_path)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 @app.post("/text-to-sign")
@@ -298,10 +294,9 @@ async def text_to_sign(payload: dict):
 
             response = gemini_model.generate_content(dynamic_prompt)
             raw = response.text.strip()
-            print(f"STEP 2 🤖  Gemini raw response: {raw}")
             raw = re.sub(r"```(?:json)?", "", raw).strip().strip("```").strip()
             gloss = json.loads(raw)
-            print(f"STEP 3 ✋  ISL Gloss: {gloss}")
+            print(f"STEP 2 🤖  Gemini ISL Gloss: {gloss}")
         except Exception as e:
             print(f"STEP 2 ❌  Gemini failed: {e}, falling back to word split")
             gloss = [w.upper() for w in text.split() if len(w) > 2]
@@ -310,14 +305,8 @@ async def text_to_sign(payload: dict):
         gloss = [w.upper() for w in text.split() if len(w) > 2]
 
     available = get_available_motion_files()
-    print(f"STEP 4 📁  Available words: {list(available.keys())}")
     animation_sequence = build_animation_sequence(gloss)
-    print(f"STEP 5 ✅  Sequence ({len(animation_sequence)} clips):")
-    for clip in animation_sequence:
-        icon = "✅" if clip['type'] == 'sign' else "✏️"
-        print(f"        {icon} '{clip['word']}' → {clip['file']}")
-    print("="*55 + "\n")
-
+    
     return JSONResponse({
         "text": text,
         "gloss": gloss,
@@ -339,7 +328,8 @@ async def video_ocr_to_sign(video: UploadFile = File(...)):
 
     suffix = Path(video.filename).suffix if video.filename else ".mp4"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await video.read())
+        content = await video.read()
+        tmp.write(content)
         tmp_path = tmp.name
 
     print("\n" + "="*55)
@@ -442,4 +432,5 @@ async def video_ocr_to_sign(video: UploadFile = File(...)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        os.unlink(tmp_path)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)

@@ -66,8 +66,8 @@ function VRMAvatarScene({ animRef, setVrmError }) {
     );
   }, [animRef, setVrmError]);
 
-  const SMOOTH = 0.3;
-  const HSMOOTH = 0.5;
+  const SMOOTH = 0.08; // Ultra-smooth gliding
+  const HSMOOTH = 0.15;
   const lerpB = (cur, tar, a) => cur + (tar - cur) * a;
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -391,6 +391,45 @@ function Convert() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
 
+  const [shouldRecord, setShouldRecord] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+
+  const startRecording = useCallback(() => {
+    if (!shouldRecord) return;
+    const canvas = document.getElementById('debug_canvas');
+    if (!canvas) return;
+    try {
+      recordedChunksRef.current = [];
+      const stream = canvas.captureStream(30);
+      const mr = new MediaRecorder(stream, { mimeType: 'video/webm' });
+      mr.ondataavailable = e => {
+        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+      mr.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `sign_language_animation_${Date.now()}.webm`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      };
+      mr.start();
+      mediaRecorderRef.current = mr;
+    } catch (e) {
+      console.warn("MediaRecorder issue:", e);
+    }
+  }, [shouldRecord]);
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
+  }, []);
+
   const animRef = useRef({
     flag: false,
     animations: [],
@@ -431,7 +470,7 @@ function Convert() {
           }
         }
 
-        defaultPose(animRef.current);
+        // Removed defaultPose here to allow smooth blending from previous sign
 
         animRef.current.currentFrame = 0;
         animRef.current.jsonFrames = data.frames;
@@ -452,6 +491,7 @@ function Convert() {
   }, []);
 
   const playSequence = useCallback(async (sequence) => {
+    startRecording();
     const signClips = sequence.filter(s => s.type === 'sign');
     const spellClips = sequence.filter(s => s.type === 'fingerspell');
     setStatusMsg(`▶ Playing ${signClips.length} signs + ${spellClips.length} finger-spell letters`);
@@ -464,10 +504,11 @@ function Convert() {
       }
       setStatusMsg(`▶ Signing: ${anim.word} (${anim.type})`);
       await playJSONFile(anim.file);
-      await new Promise(r => setTimeout(r, anim.type === 'sign' ? 400 : 80)); // shorter pause for letters
+      await new Promise(r => setTimeout(r, anim.type === 'sign' ? pause : (pause / 5)));
     }
     setStatusMsg('✅ Done signing!');
-  }, [playJSONFile]);
+    stopRecording();
+  }, [playJSONFile, pause, startRecording, stopRecording]);
 
   // ── Play demo agriculture_motion.json ──────────────────────────────────────
   const playDemo = useCallback(() => {
@@ -492,6 +533,7 @@ function Convert() {
     animRef.current.animations = [];
     setIsProcessing(true);
     setStatusMsg('🔍 Checking MongoDB for signs…');
+    startRecording();
 
     for (const word of strWords) {
       // Try MongoDB first via /motion/:word
@@ -545,7 +587,8 @@ function Convert() {
             if (upper >= 'A' && upper <= 'Z') {
               setText(prev => prev + ch);
               await playJSONFile(`/alphabets/${upper}.json`);
-              await new Promise(r => setTimeout(r, 120)); // short pause between letters
+              // Small pause between letters (1/5th of word pause)
+              await new Promise(r => setTimeout(r, pause / 5)); 
             }
           }
         }
@@ -553,7 +596,8 @@ function Convert() {
     }
     setIsProcessing(false);
     setStatusMsg('✅ Done signing!');
-  }, [pause]);
+    stopRecording();
+  }, [pause, startRecording, stopRecording]);
 
   // ── GenAI Audio Upload ─────────────────────────────────────────────────────
   const videoReelInputRef = useRef(null);
@@ -821,6 +865,13 @@ function Convert() {
 
           <p className='label-style'>Pause time: {pause} ms</p>
           <input type="range" min="0" max="2000" step="100" value={pause} onChange={(e) => setPause(parseInt(e.target.value))} className='form-range w-100' />
+
+          <div className="form-check mt-3 mb-3">
+            <input className="form-check-input" type="checkbox" id="recordCheck" checked={shouldRecord} onChange={e => setShouldRecord(e.target.checked)} />
+            <label className="form-check-label" htmlFor="recordCheck" style={{fontSize: '0.85rem', color: '#cbd5e1', cursor: 'pointer'}}>
+               🎥 Auto-Download Video
+            </label>
+          </div>
 
           <hr />
           <p className='label-style' style={{ fontSize: '0.75rem' }}>
